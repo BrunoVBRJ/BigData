@@ -1,0 +1,122 @@
+import findspark
+
+findspark.init()
+from pyspark.sql import SparkSession
+import os
+import shutil
+import matplotlib.pyplot as plt
+from fpdf import FPDF
+
+# Cria uma SparkSession
+spark = SparkSession.builder.appName("LogFilter").getOrCreate()
+
+# Lê o arquivo de log como um RDD
+input_file = "c:/logs_domino/console_server.log"
+
+# Cria o RDD lendo o arquivo de entrada
+log_rdd = spark.sparkContext.textFile(input_file)
+
+# Define as palavras-chave para filtrar
+keywords = ["Failure", "security", "Disk", 'Warning']
+
+# Cria um dicionário para contar as ocorrências das palavras-chave
+keyword_counts = {keyword: 0 for keyword in keywords}
+
+# Cria um acumulador para cada palavra-chave
+accumulators = {keyword: spark.sparkContext.accumulator(0) for keyword in keywords}
+
+# Essa função é para filtrar as linhas (ignora maiúsculas/minúsculas) e contar as ocorrências
+def filter_lines(line):
+    line_lower = line.lower()  # Converte a linha para minúsculas
+    found = False
+    for keyword in keywords:
+        if keyword.lower() in line_lower:  # Converte a palavra-chave para minúsculas
+            accumulators[keyword].add(1)  # Incrementa o acumulador da palavra-chave
+            found = True
+    return found
+
+
+# Filtrar as linhas e criar um novo RDD
+filtered_rdd = log_rdd.filter(filter_lines)
+
+# Definir o arquivo de saída
+output_file = "c:/logs_domino/log_filtrado.txt"
+
+# Isso é para garantir que haja apenas uma partição e coletar os dados em um arquivo único
+filtered_rdd.coalesce(1).saveAsTextFile("c:/logs_domino/temp_output")
+
+# Move o arquivo gerado de "temp_output" para "Log_filtrado.txt"
+# O arquivo gerado terá o nome "part-00000", então aqui renomeia para o nome desejado
+output_dir = "c:/logs_domino/temp_output"
+for filename in os.listdir(output_dir):
+    if filename.startswith("part-"):
+        os.rename(os.path.join(output_dir, filename), output_file)
+
+# Remove o diretório temporário e todo seu conteúdo
+shutil.rmtree(output_dir)
+
+# Exibe a contagem de ocorrências para cada palavra-chave
+print(f"Arquivo salvo como {output_file}")
+print("\nContagem de palavras-chave encontradas:")
+for keyword in keywords:
+    keyword_counts[keyword] = accumulators[keyword].value
+    print(f"{keyword}: {accumulators[keyword].value} ocorrência(s)")
+
+
+# Gera um gráfico de barras com as contagens das palavras-chave
+def create_bar_chart(keyword_counts):
+    labels = list(keyword_counts.keys())
+    sizes = list(keyword_counts.values())
+    colors = ['#ff9999', '#66b3ff', '#99ff99', '#ffcc99']  # Cores das barras
+
+    fig, ax = plt.subplots(figsize=(10, 6))  # Aumenta o tamanho da figura
+    ax.bar(labels, sizes, color=colors)
+
+    ax.set_xlabel('Palavras-chave', fontsize=14)  # Aumenta o tamanho da fonte
+    ax.set_ylabel('Ocorrências', fontsize=14)  # Aumenta o tamanho da fonte
+    ax.set_title('Ocorrências de Palavras-chave no Log', fontsize=16)  # Aumenta o tamanho da fonte
+
+    # Adiciona os valores em cima das barras
+    for i, v in enumerate(sizes):
+        ax.text(i, v + 0.1, str(v), ha='center', va='bottom', fontsize=12)  # Aumenta o tamanho da fonte
+
+    # Salvar o gráfico como imagem
+    chart_path = "c:/logs_domino/palavras_chave_barras.png"
+    plt.savefig(chart_path)
+    plt.close()  # Fecha o gráfico para não exibir durante a execução
+    return chart_path
+
+
+# Chama a função para criar o gráfico de barras
+chart_path = create_bar_chart(keyword_counts)
+
+
+# Gera o PDF com resumo e gráfico
+def generate_pdf(keyword_counts, chart_path):
+    pdf = FPDF()
+    pdf.add_page()
+
+    # Título
+    pdf.set_font('Arial', 'B', 16)
+    pdf.cell(200, 10, 'Relatório de Análise de Logs', ln=True, align='C')
+
+    # Adiciona o resumo
+    pdf.set_font('Arial', '', 12)
+    pdf.ln(10)
+    pdf.cell(200, 10, 'Resumo da Contagem de Palavras-chave:', ln=True)
+
+    # Adiciona a contagem das palavras-chave
+    for keyword, count in keyword_counts.items():
+        pdf.cell(200, 10, f'{keyword}: {count} ocorrência(s)', ln=True)
+
+    # Adiciona o gráfico
+    pdf.ln(10)
+    pdf.image(chart_path, x=30, w=150)  # Ajusta a posição e largura do gráfico no PDF
+
+    # Salva o PDF
+    pdf_output = "c:/logs_domino/relatorio_analise_logs.pdf"
+    pdf.output(pdf_output)
+    print(f"Relatório PDF gerado: {pdf_output}")
+
+# Chama a função para gerar o PDF
+generate_pdf(keyword_counts, chart_path)
